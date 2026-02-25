@@ -1,0 +1,55 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/oneclaw-core",
+    "crates/oneclaw-providers",
+    "crates/oneclaw-channels",
+    "crates/oneclaw-tools",
+]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.85"
+authors = ["OneClaw Contributors"]
+repository = "https://github.com/nicekid1/oneclaw"
+description = "AI Agent Kernel for Edge/IoT — LLM Orchestration done right"
+keywords = ["ai", "agent", "edge", "iot", "rust"]
+categories = ["embedded", "science::robotics"]
+
+[workspace.dependencies]
+# Async
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+# Error handling
+thiserror = "2"
+anyhow = "1"
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+# Crypto
+ring = "0.17"
+# Database (Sprint 3+)
+rusqlite = { version = "0.32", features = ["bundled"] }
+# HTTP (Sprint 5+)
+reqwest = { version = "0.12", features = ["json", "blocking", "rustls-tls"], default-features = false }
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+# UUID
+uuid = { version = "1", features = ["v4", "serde"] }
+# Bytes
+bytes = "1"
+# MQTT
+rumqttc = "0.24"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

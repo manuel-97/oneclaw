@@ -1,0 +1,11 @@
+[package]
+name = "oneclaw-tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Built-in tool implementations for OneClaw"
+
+[dependencies]
+oneclaw-core = { path = "../oneclaw-core" }
+tracing = { workspace = true }
+chrono = { workspace = true }

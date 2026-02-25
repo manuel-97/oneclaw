@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ONECLAW v1.5 — Terminal</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+:root{--black:#060a08;--bg:#0a0e0c;--bg2:#0e1410;--bg3:#121a15;--panel:#0c1210;--border:#1a2a22;--border-hi:#245a3a;--g:#2dd4a0;--g2:#1a7a55;--g3:#10442e;--g-dim:rgba(45,212,160,.07);--g-glow:rgba(45,212,160,.15);--g-bright:#5fffca;--amber:#f0a020;--amber-dim:rgba(240,160,32,.1);--red:#ff4c4c;--red-dim:rgba(255,76,76,.1);--blue:#4ca0ff;--blue-dim:rgba(76,160,255,.1);--white:#d0ddd5;--white2:#8aa896;--white3:#557565;--mono:'IBM Plex Mono','Consolas',monospace;--sans:'Space Grotesk',system-ui,sans-serif}
+.light{--black:#f0f4f2;--bg:#f5f8f6;--bg2:#eaf0ec;--bg3:#dfe8e2;--panel:#fff;--border:#c0d4c8;--border-hi:#2a9060;--g:#0d7a50;--g2:#15a06a;--g3:#d0f0e0;--g-dim:rgba(13,122,80,.05);--g-glow:rgba(13,122,80,.1);--g-bright:#0a6040;--amber:#a06800;--amber-dim:rgba(160,104,0,.08);--red:#c02020;--red-dim:rgba(192,32,32,.08);--blue:#1a60c0;--blue-dim:rgba(26,96,192,.08);--white:#1a2e24;--white2:#3a5a48;--white3:#6a8a78}
+html,body{width:100%;height:100%;margin:0;padding:0;overflow:hidden}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--mono);background:var(--black);color:var(--white);font-size:13px;-webkit-font-smoothing:antialiased}
+::selection{background:var(--g);color:var(--black)}
+::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:var(--bg)}::-webkit-scrollbar-thumb{background:var(--border-hi);border-radius:0}
+input::placeholder{color:var(--white3)}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
+@keyframes ticker{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+.shell{display:flex;flex-direction:column;width:100vw;height:100vh;background:var(--black);overflow:hidden;position:relative}
+.shell::after{content:'';position:fixed;inset:0;pointer-events:none;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,.03) 2px,rgba(0,0,0,.03) 4px);z-index:999;opacity:.4}
+.light .shell::after{opacity:.15}
+.topbar{flex:0 0 35px;width:100%;background:var(--bg);border-bottom:1px solid var(--border);display:flex;align-items:center;z-index:10;padding:0 12px}
+.topbar-brand{display:flex;align-items:center;gap:8px;padding-right:16px;border-right:1px solid var(--border)}
+.topbar-brand-claw{display:flex;align-items:center;color:var(--g)}
+.topbar-brand-claw svg{width:18px;height:18px}
+.topbar-brand-name{font-family:var(--sans);font-size:14px;font-weight:700;color:var(--g);letter-spacing:.08em;text-transform:uppercase}
+.topbar-brand-ver{font-size:11px;color:var(--white3);margin-left:4px}
+.topbar-tabs{display:flex;height:100%;min-width:0}
+.topbar-tab{height:100%;padding:0 14px;display:flex;align-items:center;gap:6px;border:none;border-right:1px solid var(--border);background:transparent;color:var(--white3);font-family:var(--mono);font-size:12px;font-weight:500;cursor:pointer;transition:all .1s;letter-spacing:.03em;text-transform:uppercase;position:relative;white-space:nowrap}
+.topbar-tab:hover{color:var(--white2);background:var(--g-dim)}
+.topbar-tab.active{color:var(--g);background:var(--g-dim)}
+.topbar-tab.active::after{content:'';position:absolute;bottom:0;left:0;right:0;height:2px;background:var(--g)}
+.topbar-tab svg{width:13px;height:13px}
+.topbar-tab kbd{font-size:10px;padding:1px 4px;border:1px solid var(--border);border-radius:2px;color:var(--white3);font-family:var(--mono);background:var(--bg2)}
+.topbar-right{margin-left:auto;display:flex;align-items:center;height:100%}
+.topbar-cell{height:100%;padding:0 12px;display:flex;align-items:center;gap:6px;border-left:1px solid var(--border);font-size:12px;white-space:nowrap}
+.topbar-cell.status{color:var(--g)}
+.topbar-cell.clock{color:var(--amber);font-weight:600;letter-spacing:.05em}
+.topbar-cell button{background:transparent;border:1px solid var(--border);color:var(--white3);padding:2px 8px;font-family:var(--mono);font-size:11px;cursor:pointer;border-radius:2px;transition:all .1s}
+.topbar-cell button:hover{border-color:var(--g);color:var(--g)}
+.ticker-wrap{flex:0 0 24px;width:100%;background:var(--bg2);border-bottom:1px solid var(--border);overflow:hidden;z-index:9}
+.ticker{display:flex;animation:ticker 40s linear infinite;white-space:nowrap;height:100%;align-items:center}
+.ticker-item{padding:0 20px;font-size:11px;letter-spacing:.03em;display:flex;align-items:center;gap:6px}
+.ticker-item .label{color:var(--white3);text-transform:uppercase}
+.ticker-item .val{font-weight:600}
+.ticker-item .val.up{color:var(--g)}.ticker-item .val.warn{color:var(--amber)}.ticker-item .val.dn{color:var(--red)}
+.ticker-sep{color:var(--border);padding:0 4px}
+.grid-content{flex:1 1 0%;min-height:0;min-width:0;overflow-y:auto;overflow-x:hidden;padding:8px;width:100%;display:flex;flex-direction:column}
+.grid-content>.panel{flex:0 0 auto}
+.statusbar{flex:0 0 22px;width:100%;background:var(--bg);border-top:1px solid var(--border);display:flex;align-items:center;padding:0 10px;font-size:11px}
+.statusbar-item{padding:0 10px;color:var(--white3);border-right:1px solid var(--border);display:flex;align-items:center;gap:4px;height:100%;white-space:nowrap}
+.statusbar-item:last-child{border-right:none}
+.statusbar-item .dot{width:6px;height:6px;border-radius:50%;display:inline-block}
+.statusbar-item .dot.on{background:var(--g);box-shadow:0 0 4px var(--g)}
+.statusbar-item .dot.off{background:var(--red)}
+.panel{background:var(--panel);border:1px solid var(--border);overflow:hidden;min-width:0}
+.panel-head{display:flex;align-items:center;justify-content:space-between;padding:0 10px;height:29px;background:var(--bg2);border-bottom:1px solid var(--border);user-select:none}
+.panel-title{font-size:11px;font-weight:600;color:var(--g);letter-spacing:.08em;text-transform:uppercase;display:flex;align-items:center;gap:6px}
+.panel-title::before{content:'■';font-size:8px}
+.panel-badge{font-size:10px;padding:1px 6px;background:var(--g-dim);color:var(--g);border:1px solid var(--g3);letter-spacing:.04em;white-space:nowrap}
+.panel-badge.warn{background:var(--amber-dim);color:var(--amber);border-color:rgba(240,160,32,.2)}
+.panel-badge.err{background:var(--red-dim);color:var(--red);border-color:rgba(255,76,76,.2)}
+.panel-body{overflow-y:auto}
+.drow{display:flex;align-items:center;padding:0 10px;height:31px;border-bottom:1px solid var(--border);font-size:12px;transition:background .08s}
+.drow:hover{background:var(--g-dim)}.drow:last-child{border-bottom:none}
+.drow .dot{width:6px;height:6px;border-radius:50%;margin-right:8px;flex-shrink:0}
+.drow .dot.on{background:var(--g);box-shadow:0 0 4px var(--g)}.drow .dot.idle{background:var(--amber)}.drow .dot.off{background:var(--white3)}.drow .dot.err{background:var(--red);box-shadow:0 0 4px var(--red)}
+.drow .name{flex:1;color:var(--white);font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.drow .sub{color:var(--white3);margin-left:8px;font-size:11px;white-space:nowrap}
+.drow .val{text-align:right;min-width:64px;font-weight:600;padding-left:8px;white-space:nowrap}
+.drow .val.g{color:var(--g)}.drow .val.a{color:var(--amber)}.drow .val.r{color:var(--red)}.drow .val.b{color:var(--blue)}
+.drow .tag{font-size:10px;padding:1px 5px;margin-left:8px;letter-spacing:.04em;border:1px solid;white-space:nowrap}
+.drow .tag.pri{color:var(--g);border-color:var(--g3);background:var(--g-dim)}.drow .tag.fb{color:var(--white3);border-color:var(--border)}
+.drow .tag.on{color:var(--g);border-color:var(--g3);background:var(--g-dim)}.drow .tag.idle{color:var(--amber);border-color:rgba(240,160,32,.2);background:var(--amber-dim)}.drow .tag.off{color:var(--white3);border-color:var(--border)}
+.mcell{background:var(--panel);border:1px solid var(--border);padding:10px 12px;min-width:0}
+.mcell-label{font-size:10px;color:var(--white3);letter-spacing:.08em;text-transform:uppercase;margin-bottom:4px}
+.mcell-val{font-size:22px;font-weight:700;letter-spacing:-.03em;line-height:1;font-family:var(--sans)}
+.mcell-val.g{color:var(--g)}.mcell-val.a{color:var(--amber)}.mcell-val.r{color:var(--red)}
+.mcell-sub{font-size:10px;color:var(--white3);margin-top:3px}
+.arow{display:flex;align-items:flex-start;padding:6px 10px;border-bottom:1px solid var(--border);font-size:12px;gap:8px;transition:background .08s;line-height:1.5}
+.arow:hover{background:var(--g-dim)}
+.arow .atime{font-size:11px;font-weight:600;flex-shrink:0;min-width:40px;padding-top:1px}
+.arow .atime.warn{color:var(--amber)}.arow .atime.danger{color:var(--red)}.arow .atime.success{color:var(--g)}.arow .atime.info{color:var(--blue)}
+.arow .aicon{flex-shrink:0;display:flex;align-items:center;padding-top:2px}
+.arow .aicon svg{width:15px;height:15px}
+.arow .amsg{flex:1;color:var(--white);min-width:0}
+.arow .atype{font-size:10px;color:var(--white3);text-transform:uppercase;letter-spacing:.06em;flex-shrink:0;padding-top:2px}
+.chat-wrap{display:flex;flex-direction:column;flex:1 1 0%;min-height:0}
+.chat-messages{flex:1 1 0%;min-height:0;overflow-y:auto;padding:10px}
+.cmsg{margin-bottom:8px;display:flex;gap:8px;font-size:12px;line-height:1.55}
+.cmsg .csender{font-size:11px;font-weight:600;flex-shrink:0;min-width:100px;text-align:right;padding-top:2px}
+.cmsg .csender.user{color:var(--amber)}.cmsg .csender.bot{color:var(--g)}
+.cmsg .cbody{flex:1;color:var(--white);border-left:2px solid var(--border);padding-left:10px;min-width:0}
+.cmsg.bot .cbody{border-left-color:var(--g3)}.cmsg.user .cbody{border-left-color:rgba(240,160,32,.3)}
+.chat-bar{flex-shrink:0;padding:8px 10px;border-top:1px solid var(--border);display:flex;gap:8px}
+.chat-input{flex:1;min-width:0;padding:6px 10px;background:var(--bg);border:1px solid var(--border);color:var(--white);font-family:var(--mono);font-size:12px;outline:none;transition:border .15s}
+.chat-input:focus{border-color:var(--g)}
+.chat-cmd{flex-shrink:0;padding:6px 14px;background:var(--g-dim);border:1px solid var(--g3);color:var(--g);font-family:var(--mono);font-size:12px;font-weight:600;cursor:pointer;letter-spacing:.04em;text-transform:uppercase;transition:all .1s}
+.chat-cmd:hover{background:var(--g);color:var(--black)}
+.config-block{padding:10px 12px;font-size:12px;line-height:1.7;color:var(--white2);white-space:pre;overflow-x:auto}
+.config-block .ck{color:var(--blue)}.config-block .cv{color:var(--g)}.config-block .cc{color:var(--white3)}.config-block .cs{color:var(--amber)}
+.flow-chain{display:flex;align-items:center;justify-content:center;padding:14px 10px;gap:12px;flex-wrap:wrap}
+.flow-box{padding:8px 16px;border:1px solid var(--border);text-align:center}
+.flow-box.pri{border-color:var(--g);background:var(--g-dim)}
+.flow-box .fn{font-size:12px;font-weight:700;color:var(--white)}.flow-box.pri .fn{color:var(--g)}
+.flow-box .fr{font-size:10px;color:var(--white3);margin-top:2px}.flow-box .fm{font-size:10px;color:var(--g);font-weight:600}
+.flow-arr{font-size:15px;color:var(--g);padding:0 4px;font-weight:700}
+.flow-arr-fail{font-size:10px;color:var(--red);display:block;text-align:center;margin-top:-2px}
+.g-overview{display:grid;grid-template-columns:1fr 1fr;grid-template-rows:auto auto 1fr;gap:8px;min-height:0;flex:0 0 auto}
+.g-metrics{display:grid;grid-template-columns:repeat(6,1fr);gap:1px;grid-column:1/-1}
+.g-overview>.span-full{grid-column:1/-1}
+.g-providers{display:grid;grid-template-columns:1fr 1fr;grid-template-rows:auto 1fr;gap:8px;min-height:0;flex:0 0 auto}
+.g-providers>.span-full{grid-column:1/-1}
+.g-devices{display:grid;grid-template-columns:repeat(3,1fr);grid-template-rows:auto 1fr;gap:8px;min-height:0;flex:0 0 auto}
+.g-devices>.span-full{grid-column:1/-1}
+.page-chat{display:flex;flex-direction:column;flex:1 1 0%;min-height:0}
+.page-chat .panel{display:flex;flex-direction:column;flex:1 1 0%;min-height:0}
+</style>
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+</head>
+<body>
+<div class="shell" id="shell">
+<div class="topbar">
+  <div class="topbar-brand"><span class="topbar-brand-claw"><i data-lucide="cpu"></i></span><span class="topbar-brand-name">OneCla<span style="color:var(--red)">w</span></span><span class="topbar-brand-ver">v1.5</span></div>
+  <div class="topbar-tabs" id="tabs"></div>
+  <div class="topbar-right">
+    <div class="topbar-cell status"><span class="dot on" style="width:6px;height:6px;border-radius:50%;display:inline-block;background:var(--g);box-shadow:0 0 4px var(--g)"></span> HOẠT ĐỘNG</div>
+    <div class="topbar-cell clock" id="clock"></div>
+    <div class="topbar-cell"><button onclick="toggleTheme()" id="thbtn">◐ THEME</button></div>
+  </div>
+</div>
+<div class="ticker-wrap"><div class="ticker" id="ticker"></div></div>
+<div class="grid-content" id="content"></div>
+<div class="statusbar">
+  <div class="statusbar-item"><span class="dot on"></span> anthropic</div>
+  <div class="statusbar-item"><span class="dot off"></span> openai (standby)</div>
+  <div class="statusbar-item"><span class="dot on"></span> ollama (cục bộ)</div>
+  <div class="statusbar-item">BIN 3.44MB</div>
+  <div class="statusbar-item">TESTS 509</div>
+  <div class="statusbar-item">UNWRAP 0</div>
+  <div class="statusbar-item">ARM ✓</div>
+  <div class="statusbar-item" style="margin-left:auto;border-right:none;border-left:1px solid var(--border);color:var(--g)">FallbackChain [3] READY</div>
+</div>
+</div>
+<script>
+let theme='dark',tab='overview';
+const tabs=[{id:'overview',label:'TỔNG QUAN',key:'1',ico:'layout-dashboard'},{id:'providers',label:'PROVIDER',key:'2',ico:'server'},{id:'devices',label:'THIẾT BỊ',key:'3',ico:'smartphone'},{id:'alerts',label:'CẢNH BÁO',key:'4',ico:'bell'},{id:'chat',label:'TERMINAL',key:'5',ico:'terminal'}];
+const P=[{id:'anthropic',name:'Anthropic Claude',model:'claude-sonnet-4-20250514',st:'on',lat:842,tok:12840,role:'pri',cost:'$0.42'},{id:'openai',name:'OpenAI GPT',model:'gpt-4o',st:'off',lat:null,tok:0,role:'fb',cost:'$0.00'},{id:'ollama',name:'Ollama Local',model:'llama3.2:3b',st:'on',lat:2341,tok:580,role:'fb',cost:'$0.00'}];
+const D=[{id:'phone-a1b2c3',label:'ĐT Chị Minh',paired:'2026-02-18',seen:'2p trước',st:'on',ch:'telegram'},{id:'tablet-d4e5f6',label:'TB Y tá Bình',paired:'2026-02-15',seen:'15p trước',st:'on',ch:'tcp'},{id:'rpi-g7h8i9',label:'Cảm biến PK',paired:'2026-02-10',seen:'1h trước',st:'idle',ch:'mqtt'},{id:'phone-j0k1l2',label:'ĐT BS Hùng',paired:'2026-01-28',seen:'3d trước',st:'off',ch:'telegram'}];
+const A=[{t:'14:32',type:'HEALTH',msg:'Bà Nguyễn: Nhịp tim bất thường — 92 bpm, ngưỡng 90',sev:'warn',ico:'heart-pulse',clr:'var(--red)'},{t:'13:15',type:'SYSTEM',msg:'Provider fallback kích hoạt: anthropic → ollama (timeout 60s)',sev:'info',ico:'zap',clr:'var(--amber)'},{t:'11:48',type:'HEALTH',msg:'Bà Nguyễn: Chưa uống thuốc sáng — quá hạn 3 giờ',sev:'danger',ico:'pill',clr:'var(--red)'},{t:'09:30',type:'SECURITY',msg:'Thiết bị ghép nối mới: phone-a1b2c3 (ĐT Chị Minh)',sev:'success',ico:'link',clr:'var(--g)'},{t:'08:00',type:'SYSTEM',msg:'OneClaw v1.5 boot — 509 tests ✓ — 3 providers — FallbackChain ready',sev:'success',ico:'cpu',clr:'var(--g)'},{t:'07:55',type:'SYSTEM',msg:'SQLite persistence loaded: 4 devices, 127 memory entries',sev:'info',ico:'database',clr:'var(--blue)'}];
+const CH=[{role:'user',src:'phone-a1b2c3 / telegram',msg:'Bà ngoại hôm nay thế nào?'},{role:'bot',src:'anthropic / 842ms',msg:'Bà Nguyễn hôm nay tương đối ổn. Nhịp tim TB 78 bpm, HA 130/85.\nCảnh báo 14:32: nhịp tim 92 bpm (ngưỡng 90) — đã hạ.\nThuốc sáng: CHƯA UỐNG — đã gửi nhắc Chị Minh qua Telegram.'},{role:'user',src:'tablet-d4e5f6 / tcp',msg:'Đã cho bà uống thuốc. Cập nhật.'},{role:'bot',src:'anthropic / 756ms',msg:'Ghi nhận. Thuốc sáng: ✓ uống lúc 12:03 (trễ 3h).\nĐã cập nhật memory store. Nhắc ngày mai: 09:00 sharp.'}];
+function buildTicker(){const items=[{l:'UPTIME',v:'14d 07h 23m',c:'up'},{l:'MSG/24H',v:'2,847',c:'up'},{l:'LATENCY',v:'842ms',c:'up'},{l:'RAM',v:'3.8MB / 128MB',c:'up'},{l:'TOKENS',v:'13.4K',c:'warn'},{l:'COST/24H',v:'$0.42',c:'up'},{l:'ALERTS',v:'4',c:'warn'},{l:'DB',v:'2.1MB',c:'up'},{l:'PROVIDERS',v:'2/3 ACTIVE',c:'up'},{l:'DEVICES',v:'2 ONLINE',c:'up'},{l:'FTS5',v:'127 entries',c:'up'},{l:'MQTT',v:'CONNECTED',c:'up'}];const h=items.map(i=>`<span class="ticker-item"><span class="label">${i.l}</span><span class="val ${i.c}">${i.v}</span></span>`).join('<span class="ticker-sep">│</span>');document.getElementById('ticker').innerHTML=h+h}
+function panel(t,b,bg){const badge=bg?`<span class="panel-badge${bg.c?' '+bg.c:''}">${bg.t}</span>`:'';return`<div class="panel"><div class="panel-head"><span class="panel-title">${t}</span>${badge}</div><div class="panel-body">${b}</div></div>`}
+function mcell(l,v,c,s){return`<div class="mcell"><div class="mcell-label">${l}</div><div class="mcell-val ${c||''}">${v}</div>${s?`<div class="mcell-sub">${s}</div>`:''}</div>`}
+function prow(p){const d=`<span class="dot ${p.st}"></span>`;const l=p.lat?`<span class="val${p.lat>2000?' a':' g'}">${p.lat}ms</span>`:'<span class="val" style="color:var(--white3)">—</span>';const t=p.tok>0?`<span class="val g">${(p.tok/1000).toFixed(1)}K</span>`:'<span class="val" style="color:var(--white3)">—</span>';const tg=`<span class="tag ${p.role}">${p.role==='pri'?'PRIMARY':'FALLBACK'}</span>`;return`<div class="drow">${d}<span class="name">${p.name}</span><span class="sub">${p.model}</span>${tg}${l}${t}<span class="val" style="min-width:48px;color:var(--white3)">${p.cost}</span></div>`}
+function drow(d){const c=d.st==='on'?'on':d.st==='idle'?'idle':'off';const s=d.st==='on'?'ONLINE':d.st==='idle'?'IDLE':'OFFLINE';return`<div class="drow"><span class="dot ${c}"></span><span class="name">${d.label}</span><span class="sub">${d.id}</span><span class="val" style="min-width:50px;color:var(--white3)">${d.ch}</span><span class="val" style="min-width:64px;color:var(--white3)">${d.seen}</span><span class="tag ${c}">${s}</span></div>`}
+function arow(a){return`<div class="arow"><span class="atime ${a.sev}">${a.t}</span><span class="aicon" style="color:${a.clr}"><i data-lucide="${a.ico}"></i></span><span class="amsg">${a.msg}</span><span class="atype">${a.type}</span></div>`}
+function pageOverview(){return`<div class="g-overview"><div class="g-metrics">${mcell('UPTIME','14d 7h','g','liên tục')}${mcell('TIN NHẮN','2,847','','24 giờ')}${mcell('ĐỘ TRỄ','842ms','g','anthropic')}${mcell('RAM','3.8 MB','','/ 128 MB')}${mcell('TOKEN','13.4K','a','~$0.42')}${mcell('CẢNH BÁO','4','a','hôm nay')}</div>${panel('CHUỖI PROVIDER',P.map(prow).join(''),{t:'3 NHÀ CUNG CẤP'})}${panel('CẢNH BÁO GẦN ĐÂY',A.slice(0,4).map(arow).join(''),{t:A.length+' HÔM NAY',c:'warn'})}<div class="span-full">${panel('THIẾT BỊ',D.map(drow).join(''),{t:D.filter(x=>x.st==='on').length+'/'+D.length+' ONLINE'})}</div></div>`}
+function pageProviders(){const cfg=`<span class="cc"># OneClaw v1.5 — Provider Configuration</span>\n<span class="ck">[provider]</span>\n<span class="ck">primary</span> = <span class="cv">"anthropic"</span>\n<span class="ck">model</span>   = <span class="cv">"claude-sonnet-4-20250514"</span>\n<span class="ck">fallback</span> = <span class="cv">["openai", "ollama"]</span>\n<span class="ck">max_retries</span> = <span class="cv">1</span>\n\n<span class="ck">[provider.keys]</span>\n<span class="ck">anthropic</span> = <span class="cs">"sk-ant-••••••••"</span>\n<span class="ck">openai</span>    = <span class="cs">"sk-••••••••"</span>\n\n<span class="ck">ollama_endpoint</span> = <span class="cv">"http://localhost:11434"</span>\n<span class="ck">ollama_model</span>    = <span class="cv">"llama3.2:3b"</span>`;const flow=`<div class="flow-chain"><div class="flow-box pri"><div class="fn">ANTHROPIC</div><div class="fm">claude-sonnet-4</div><div class="fr">① PRIMARY — 842ms</div></div><div><span class="flow-arr">→</span><span class="flow-arr-fail">fail?</span></div><div class="flow-box"><div class="fn">OPENAI</div><div class="fm">gpt-4o</div><div class="fr">② FALLBACK — standby</div></div><div><span class="flow-arr">→</span><span class="flow-arr-fail">fail?</span></div><div class="flow-box"><div class="fn">OLLAMA</div><div class="fm">llama3.2:3b</div><div class="fr">③ LOCAL — 2341ms</div></div></div>`;return`<div class="g-providers"><div class="span-full">${panel('FALLBACK CHAIN',flow,{t:'3 NODES'})}</div>${panel('TRẠNG THÁI PROVIDER',P.map(prow).join(''),{t:'2/3 ACTIVE'})}${panel('CẤU HÌNH TOML','<div class="config-block">'+cfg+'</div>')}</div>`}
+function pageDevices(){const on=D.filter(x=>x.st==='on').length,idle=D.filter(x=>x.st==='idle').length,off=D.filter(x=>x.st==='off').length;return`<div class="g-devices"><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:1px;grid-column:1/-1">${mcell('TRỰC TUYẾN',on,'g','')}${mcell('CHỜ',idle,'a','')}${mcell('NGOẠI TUYẾN',off,'','')}</div><div class="span-full">${panel('DANH SÁCH THIẾT BỊ',D.map(drow).join(''),{t:D.length+' PAIRED'})}</div></div>`}
+function pageAlerts(){return panel('NHẬT KÝ CẢNH BÁO — '+new Date().toLocaleDateString('vi-VN'),A.map(arow).join('')+'<div style="padding:8px 10px;text-align:center;font-size:11px;color:var(--white3)">── EOF ──</div>',{t:A.length+' EVENTS',c:'warn'})}
+function pageChat(){const msgs=CH.map(m=>{const c=m.role;const s=m.role==='user'?`<span class="csender user">⟩ ${m.src}</span>`:`<span class="csender bot">⟨ ${m.src}</span>`;return`<div class="cmsg ${c}">${s}<div class="cbody">${m.msg.replace(/\n/g,'<br>')}</div></div>`}).join('');return`<div class="page-chat"><div class="panel"><div class="panel-head"><span class="panel-title">ONECLAW TERMINAL</span><span class="panel-badge">anthropic / claude-sonnet-4</span></div><div class="chat-wrap"><div class="chat-messages">${msgs}</div><div class="chat-bar"><span style="color:var(--g);font-weight:700;padding:6px 4px">⟩</span><input class="chat-input" placeholder="Nhập lệnh hoặc tin nhắn..."><button class="chat-cmd">GỬI</button></div></div></div></div>`}
+const pages={overview:pageOverview,providers:pageProviders,devices:pageDevices,alerts:pageAlerts,chat:pageChat};
+function renderTabs(){document.getElementById('tabs').innerHTML=tabs.map(t=>`<button class="topbar-tab${tab===t.id?' active':''}" onclick="go('${t.id}')"><i data-lucide="${t.ico}"></i>${t.label}<kbd>${t.key}</kbd></button>`).join('')}
+function renderContent(){const el=document.getElementById('content');el.style.animation='none';el.offsetHeight;el.style.animation='fadeIn .15s ease-out';el.innerHTML=pages[tab]();lucide.createIcons()}
+function go(id){tab=id;renderTabs();renderContent()}
+function toggleTheme(){theme=theme==='dark'?'light':'dark';document.getElementById('shell').className=theme==='light'?'shell light':'shell'}
+function updateClock(){document.getElementById('clock').textContent=new Date().toLocaleTimeString('vi-VN',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}
+document.addEventListener('keydown',e=>{if(e.target.tagName==='INPUT')return;const n=parseInt(e.key);if(n>=1&&n<=5)go(tabs[n-1].id)});
+buildTicker();renderTabs();renderContent();updateClock();setInterval(updateClock,1000);
+</script>
+</body>
+</html>

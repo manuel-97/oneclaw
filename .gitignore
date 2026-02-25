@@ -1,0 +1,13 @@
+/target
+/release/
+*.db
+*.sqlite
+*.log
+*.swp
+*.swo
+.env
+.DS_Store
+oneclaw.toml
+*.png
+*.jpg
+docs/

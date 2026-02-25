@@ -1,0 +1,16 @@
+[package]
+name = "oneclaw-providers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "LLM Provider implementations for OneClaw"
+
+[dependencies]
+oneclaw-core = { path = "../oneclaw-core" }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }

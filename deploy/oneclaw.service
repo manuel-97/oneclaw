@@ -1,0 +1,33 @@
+[Unit]
+Description=OneClaw AI Agent — Elderly Care Monitor
+After=network.target mosquitto.service
+Wants=network.target
+
+[Service]
+Type=simple
+User=oneclaw
+Group=oneclaw
+WorkingDirectory=/opt/oneclaw
+ExecStart=/opt/oneclaw/oneclaw-elderly
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/oneclaw
+PrivateTmp=yes
+
+# Resource limits (edge device friendly)
+MemoryMax=128M
+CPUQuota=50%
+
+# Environment
+Environment=RUST_LOG=info
+Environment=ONECLAW_WORKSPACE=/opt/oneclaw
+
+[Install]
+WantedBy=multi-user.target
