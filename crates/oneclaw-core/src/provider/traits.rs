@@ -9,9 +9,8 @@
 //! All providers implement the same trait. Swap via config.
 //! Fallback chain: primary -> secondary -> local (if configured).
 //!
-//! NOTE: This module co-exists with `orchestrator::provider::LlmProvider` (the async
-//! production trait). This trait is the v1.5 foundation — sync-friendly, designed
-//! for simple testing and future migration. v1.5 will unify both interfaces.
+//! This is the unified provider interface (v1.5). All LLM backends implement
+//! the `Provider` trait. Sync-friendly, designed for edge/IoT simplicity.
 
 use crate::error::Result;
 
@@ -364,46 +363,6 @@ impl Provider for CountingTestProvider {
     }
 }
 
-/// LegacyProvider — bridge from the new Provider trait to the existing
-/// async `LlmProvider` (orchestrator::provider). This is a placeholder
-/// for v1.5 migration — each method delegates to the async LlmProvider
-/// via a blocking runtime call. In v1.2, the methods are `todo!()` stubs
-/// to prove the interface compiles and the migration path exists.
-pub struct LegacyProvider {
-    /// Display name for this bridge
-    name: String,
-}
-
-impl LegacyProvider {
-    /// Create a LegacyProvider that will bridge to an existing LlmProvider.
-    /// In v1.2, this is a compile-check stub. v1.5 will accept a
-    /// `Box<dyn LlmProvider>` and wrap it.
-    pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into() }
-    }
-}
-
-impl Provider for LegacyProvider {
-    fn id(&self) -> &'static str { "legacy-bridge" }
-    fn display_name(&self) -> &str { &self.name }
-    fn is_available(&self) -> bool { false } // Not wired until v1.5
-
-    fn chat(&self, _system: &str, _user_message: &str) -> Result<ProviderResponse> {
-        Err(crate::error::OneClawError::Provider(
-            "LegacyProvider is a v1.5 migration stub — not yet wired".into()
-        ))
-    }
-
-    fn chat_with_history(
-        &self,
-        _system: &str,
-        _messages: &[ChatMessage],
-    ) -> Result<ProviderResponse> {
-        Err(crate::error::OneClawError::Provider(
-            "LegacyProvider is a v1.5 migration stub — not yet wired".into()
-        ))
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -520,15 +479,4 @@ mod tests {
         assert!(!chain_none.is_available());
     }
 
-    #[test]
-    fn test_legacy_provider_stub() {
-        let legacy = LegacyProvider::new("legacy-ollama");
-        assert_eq!(legacy.id(), "legacy-bridge");
-        assert_eq!(legacy.display_name(), "legacy-ollama");
-        assert!(!legacy.is_available());
-        let result = legacy.chat("system", "hello");
-        assert!(result.is_err());
-        let err = format!("{}", result.unwrap_err());
-        assert!(err.contains("v1.5 migration stub"));
-    }
 }

@@ -14,7 +14,7 @@ use oneclaw_core::runtime::Runtime;
 use oneclaw_core::orchestrator::chain::{
     Chain, ChainStep, ChainExecutor, DefaultChainExecutor, ChainContext,
 };
-use oneclaw_core::orchestrator::ProviderManager;
+use oneclaw_core::provider::NoopTestProvider;
 use oneclaw_core::memory::NoopMemory;
 use oneclaw_core::event_bus::NoopEventBus;
 use oneclaw_core::tool::{Tool, ToolInfo, ToolResult, ToolRegistry, NoopTool};
@@ -55,13 +55,11 @@ impl Channel for TestCh {
 }
 
 fn make_test_context() -> ChainContext<'static> {
-    let provider_mgr = Box::leak(Box::new(ProviderManager::new("noop")));
+    let provider: &'static dyn oneclaw_core::provider::Provider = Box::leak(Box::new(NoopTestProvider::available()));
     let memory = Box::leak(Box::new(NoopMemory::new()));
     let event_bus = Box::leak(Box::new(NoopEventBus::new()));
     ChainContext {
-        provider_mgr,
-        provider_name: "noop",
-        model: "noop",
+        provider: Some(provider),
         memory,
         event_bus,
         system_prompt: "Test",
@@ -238,20 +236,17 @@ async fn test_chain_error_does_not_stop_subsequent_steps() {
 }
 
 #[tokio::test]
-async fn test_chain_with_llm_fallback_to_noop() {
+async fn test_chain_with_llm_no_provider() {
     let executor = DefaultChainExecutor::new();
-    let chain = Chain::new("llm-fallback")
+    let chain = Chain::new("llm-offline")
         .add_step(ChainStep::llm("call-llm", "Analyze: {input}"));
 
-    // Use "nonexistent" provider to trigger fallback
-    let provider_mgr = Box::leak(Box::new(ProviderManager::new("noop")));
+    // No provider configured → offline mode
     let memory = Box::leak(Box::new(NoopMemory::new()));
     let event_bus = Box::leak(Box::new(NoopEventBus::new()));
 
     let ctx = ChainContext {
-        provider_mgr,
-        provider_name: "nonexistent_provider",
-        model: "noop",
+        provider: None,
         memory,
         event_bus,
         system_prompt: "Test",
@@ -259,8 +254,8 @@ async fn test_chain_with_llm_fallback_to_noop() {
     };
 
     let result = executor.execute(&chain, "sensor data", &ctx).await.unwrap();
-    // Should fallback to noop or produce [Offline] prefix
-    assert!(!result.final_output.is_empty(), "LLM fallback should produce output");
+    // Should produce [Offline] prefix
+    assert!(result.final_output.contains("[Offline]"), "Should indicate offline: {}", result.final_output);
 }
 
 #[tokio::test]

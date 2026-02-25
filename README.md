@@ -13,37 +13,37 @@ A lightweight, secure, trait-driven AI agent runtime built in Rust. Designed for
 | Message throughput | >1K/sec | 3.8M/sec |
 | Event processing | >5K/sec | 443K/sec |
 | Memory search | <5ms | 11.9us |
-| Test coverage | — | 400+ tests |
+| Test coverage | — | 550+ tests |
 
 ## Architecture
 
 ```
-+---------------------------------------------+
-|              OneClaw Runtime                 |
-+---------+----------+----------+-------------+
-| Channel | Tool     | EventBus | Orchestrator|
-| (Ears)  | (Hands)  | (Nerves) | (Brain)     |
-+---------+----------+----------+-------------+
-|              Memory (Hippocampus)            |
-+---------------------------------------------+
-|         Security Core (Immune System)        |
-+---------------------------------------------+
++---------------------------------------------------------------------------+
+| L0: Security --------- deny-by-default, pairing, per-command auth        |
+| L1: Orchestrator ----- ModelRouter, ChainExecutor, ContextManager        |
+| L2: Memory ----------- SQLite FTS5 + Vector Search (cosine + RRF)        |
+| L3: Event Bus -------- Sync (default) or Async (tokio broadcast)         |
+| L4: Tool + Channel --- sandboxed tools, CLI/TCP/Telegram/MQTT            |
+| Provider System ------ 6 LLM providers, FallbackChain, ReliableProvider  |
+| Embedding System ----- Ollama/OpenAI embeddings, auto-embed memory       |
++---------------------------------------------------------------------------+
 ```
 
 ### 6 Layers
 
 | Layer | Role | Implementation |
 |-------|------|---------------|
-| L0 Security | Deny-by-default access control | Pairing, rate limiting, API key masking |
+| L0 Security | Deny-by-default access control | Pairing, rate limiting, per-command auth, API key masking |
 | L1 Orchestrator | LLM routing + multi-step reasoning | Router, Context Manager, Chain Executor |
-| L2 Memory | Persistent storage + full-text search | SQLite + FTS5 |
-| L3 Event Bus | Reactive pub/sub + pipelines | Synchronous drain, topic patterns, declarative pipelines |
+| L2 Memory | Persistent storage + vector search | SQLite FTS5 + cosine similarity + RRF fusion |
+| L3 Event Bus | Reactive pub/sub + pipelines | Sync (DefaultEventBus) or Async (tokio broadcast) |
 | L4 Tool | Sandboxed external actions | Registry, param validation, system_info/file_write/notify |
 | L5 Channel | Multi-source I/O | CLI, TCP, Telegram, MQTT — ChannelManager round-robin |
 
-### 6 LLM Providers
+### 6 LLM Providers + 2 Embedding Providers
 
-Anthropic, OpenAI, DeepSeek, Groq, Gemini, Ollama — with FallbackChain auto-failover.
+LLM: Anthropic, OpenAI, DeepSeek, Groq, Gemini, Ollama — with FallbackChain auto-failover.
+Embedding: Ollama (nomic-embed-text 768d), OpenAI (text-embedding-3-small 1536d).
 
 ## Use Cases
 
@@ -104,7 +104,7 @@ Set `ONECLAW_API_KEY` or provider-specific env vars (`ANTHROPIC_API_KEY`, `OPENA
 ```bash
 # Option A: Using cross (Docker-based, recommended)
 cargo install cross --git https://github.com/cross-rs/cross
-./scripts/cross-build.sh 1.5.1
+./scripts/cross-build.sh 1.6.0
 
 # Option B: Manual (requires ARM cross-compiler installed)
 rustup target add aarch64-unknown-linux-gnu
@@ -120,7 +120,7 @@ scp deploy/oneclaw.service deploy/install.sh pi@raspberrypi:~/
 
 # SSH to Pi and install
 ssh pi@raspberrypi
-sudo ./install.sh 1.5.1
+sudo ./install.sh 1.6.0
 sudo nano /opt/oneclaw/config/default.toml  # Edit config
 sudo systemctl start oneclaw
 journalctl -u oneclaw -f  # Watch logs
@@ -148,8 +148,7 @@ sudo ./deploy/uninstall.sh
 ```
 oneclaw/
 ├── crates/
-│   ├── oneclaw-core/       # Runtime, traits, registry (all 6 layers)
-│   ├── oneclaw-providers/  # LLM providers (Ollama, OpenAI-compat)
+│   ├── oneclaw-core/       # Runtime, traits, registry, providers, memory, events
 │   ├── oneclaw-tools/      # Built-in tools (system_info, file_write, notify)
 │   └── oneclaw-channels/   # Channel implementations (CLI, TCP, Telegram, MQTT)
 ├── deploy/
@@ -173,7 +172,7 @@ oneclaw/
 | `metrics` | Full operational telemetry |
 | `pair` / `verify CODE` | Device pairing (security) |
 | `remember <text>` | Store in memory |
-| `recall <query>` | Search memory (FTS5) |
+| `recall <query>` | Search memory (hybrid: FTS5 + vector) |
 | `ask <question>` | Ask AI (single LLM call) |
 | `providers` | List LLM providers and status |
 | `events` | Show event bus state |
@@ -182,6 +181,36 @@ oneclaw/
 | `channels` | List active channels |
 | `reload` | Check config changes |
 | `exit` / `quit` | Graceful shutdown |
+
+## Vector Search
+
+OneClaw supports semantic memory search via embeddings:
+
+1. Configure embedding provider in `config/default.toml`:
+   ```toml
+   [embedding]
+   provider = "ollama"
+   model = "nomic-embed-text"
+   ```
+2. `remember` auto-embeds text alongside keyword indexing
+3. `recall` uses hybrid search (FTS5 + cosine similarity + RRF fusion)
+4. Graceful fallback: no embedding provider configured means FTS-only (zero config required)
+
+## Async Event Bus
+
+For consumer apps needing realtime events (< 10ms latency):
+
+```rust
+let sender = runtime.with_async_event_bus(256);
+let mut rx = sender.subscribe();
+tokio::spawn(async move {
+    while let Ok(event) = rx.recv().await {
+        // handle event immediately
+    }
+});
+```
+
+Default: sync event bus with `drain()`. Async is opt-in.
 
 ## Development
 
@@ -205,7 +234,7 @@ cargo clippy --workspace -- -D warnings
 2. **Deny-by-default** — Security blocks everything unless explicitly allowed.
 3. **Graceful degradation** — LLM offline? Falls back to noop. Memory full? Handles gracefully.
 4. **Domain-agnostic** — Kernel knows nothing about your domain. Your app adds the domain logic.
-5. **Edge-viable** — Tokio async runtime, no garbage collector, ~3.4MB binary, ARM cross-compile ready.
+5. **Edge-viable** — Tokio async runtime, no garbage collector, ~3.5MB binary, ARM cross-compile ready.
 
 ## License
 

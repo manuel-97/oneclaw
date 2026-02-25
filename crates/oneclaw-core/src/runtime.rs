@@ -5,7 +5,6 @@ use crate::security::{SecurityCore, NoopSecurity};
 use crate::orchestrator::router::{ModelRouter, NoopRouter};
 use crate::orchestrator::context::{ContextManager, NoopContextManager};
 use crate::orchestrator::chain::{ChainExecutor, NoopChainExecutor};
-use crate::orchestrator::ProviderManager;
 use crate::memory::{Memory, NoopMemory};
 use crate::event_bus::{EventBus, NoopEventBus};
 use crate::channel::ChannelManager;
@@ -42,8 +41,6 @@ pub struct Runtime {
     pub memory: Box<dyn Memory>,
     /// The event bus implementation (Layer 3).
     pub event_bus: Box<dyn EventBus>,
-    /// The LLM provider manager (Layer 1).
-    pub provider_mgr: ProviderManager,
     /// Maps channel source identifiers to paired device IDs
     source_device_map: std::sync::Mutex<std::collections::HashMap<String, String>>,
     /// Tool registry (Layer 4) — Arc for shared access by event handlers
@@ -60,13 +57,14 @@ pub struct Runtime {
     pub pending_alerts: Arc<std::sync::Mutex<VecDeque<String>>>,
     /// v1.5 sync Provider (None = offline/no API key)
     pub provider: Option<Box<dyn crate::provider::Provider>>,
+    /// Embedding provider for vector search (None = disabled, FTS only)
+    pub embedding: Option<Box<dyn crate::provider::EmbeddingProvider>>,
 }
 
 impl Runtime {
     /// Create runtime with all Noop implementations (for testing / bare boot)
     pub fn with_defaults(config: OneClawConfig) -> Self {
         Self {
-            provider_mgr: ProviderManager::new(&config.providers.default),
             config,
             security: Box::new(NoopSecurity),
             router: Box::new(NoopRouter),
@@ -82,6 +80,7 @@ impl Runtime {
             shutdown: Arc::new(AtomicBool::new(false)),
             pending_alerts: Arc::new(std::sync::Mutex::new(VecDeque::new())),
             provider: None,
+            embedding: None,
         }
     }
 
@@ -91,7 +90,6 @@ impl Runtime {
         use crate::security::DefaultSecurity;
         Self {
             security: Box::new(DefaultSecurity::production(workspace)),
-            provider_mgr: ProviderManager::new(&config.providers.default),
             config,
             router: Box::new(NoopRouter),
             context_mgr: Box::new(NoopContextManager),
@@ -106,6 +104,7 @@ impl Runtime {
             shutdown: Arc::new(AtomicBool::new(false)),
             pending_alerts: Arc::new(std::sync::Mutex::new(VecDeque::new())),
             provider: None,
+            embedding: None,
         }
     }
 
@@ -114,7 +113,6 @@ impl Runtime {
         use crate::registry::Registry;
         let traits = Registry::resolve(&config, workspace)?;
         Ok(Self {
-            provider_mgr: ProviderManager::new(&config.providers.default),
             config,
             security: traits.security,
             router: traits.router,
@@ -130,7 +128,30 @@ impl Runtime {
             shutdown: Arc::new(AtomicBool::new(false)),
             pending_alerts: Arc::new(std::sync::Mutex::new(VecDeque::new())),
             provider: traits.provider,
+            embedding: None, // Set by consumer (elderly main.rs) or via config
         })
+    }
+
+    /// Replace the event bus with an AsyncEventBus (opt-in for realtime events).
+    ///
+    /// Consumer apps that need sub-10ms event latency should call this.
+    /// DefaultEventBus (sync, drain-based) remains the default.
+    ///
+    /// Returns the broadcast sender so callers can create receivers:
+    /// ```ignore
+    /// let sender = runtime.with_async_event_bus(256);
+    /// let mut rx = sender.subscribe();
+    /// tokio::spawn(async move {
+    ///     while let Ok(event) = rx.recv().await {
+    ///         println!("Got: {:?}", event);
+    ///     }
+    /// });
+    /// ```
+    pub fn with_async_event_bus(&mut self, capacity: usize) -> tokio::sync::broadcast::Sender<crate::event_bus::Event> {
+        let async_bus = crate::event_bus::AsyncEventBus::new(capacity);
+        let sender = async_bus.sender();
+        self.event_bus = Box::new(async_bus);
+        sender
     }
 
     /// Drain pending alerts and return them.
@@ -142,39 +163,21 @@ impl Runtime {
         }
     }
 
-    /// Execute LLM call with timeout monitoring (defense-in-depth)
-    async fn llm_with_timeout(&self, provider: &str, request: &crate::orchestrator::provider::LlmRequest) -> crate::error::Result<crate::orchestrator::provider::LlmResponse> {
-        let start = std::time::Instant::now();
-        let timeout = std::time::Duration::from_secs(self.config.providers.llm_timeout_secs);
-
-        let result = self.provider_mgr.chat(provider, request).await;
-
-        let elapsed = start.elapsed();
-        if elapsed > timeout {
-            tracing::warn!(
-                elapsed_ms = elapsed.as_millis() as u64,
-                timeout_secs = self.config.providers.llm_timeout_secs,
-                "LLM call exceeded timeout threshold"
-            );
-            Metrics::inc(&self.metrics.errors_total);
-        }
-
-        result
-    }
-
-    /// Process a message through the LLM pipeline
-    async fn process_with_llm(&self, content: &str) -> String {
+    /// Process a message through the LLM pipeline using the v1.5 Provider trait.
+    fn process_with_llm(&self, content: &str) -> String {
         use crate::orchestrator::router::analyze_complexity;
-        use crate::orchestrator::provider::LlmRequest;
         use tracing::warn;
+
+        let provider = match &self.provider {
+            Some(p) => p,
+            None => return self.offline_response(content),
+        };
 
         Metrics::inc(&self.metrics.llm_calls_total);
         let llm_start = std::time::Instant::now();
 
-        // 1. Search memory for relevant context
-        let memory_results = self.memory
-            .search(&crate::memory::MemoryQuery::new(content).with_limit(5))
-            .unwrap_or_default();
+        // 1. Search memory for relevant context (hybrid if embedding available, else FTS)
+        let memory_results = self.search_memory_context(content);
 
         let has_memory = !memory_results.is_empty();
         let memory_strings: Vec<String> = memory_results.iter()
@@ -185,18 +188,7 @@ impl Runtime {
         let complexity = analyze_complexity(content, has_memory);
         info!(complexity = ?complexity, has_memory = has_memory, "Message analysis");
 
-        // 3. Route to provider/model
-        let choice = match self.router.route(complexity) {
-            Ok(c) => c,
-            Err(e) => {
-                warn!("Router error: {}", e);
-                return format!("[OneClaw] Routing error: {}", e);
-            }
-        };
-
-        info!(provider = %choice.provider, model = %choice.model, reason = %choice.reason, "Routed");
-
-        // 4. Build context with memory
+        // 3. Build context with memory
         let system_prompt = "You are OneClaw, a helpful AI assistant running on an edge device. \
             Answer concisely and clearly. \
             When relevant data is available from memory, incorporate it into your response.";
@@ -211,42 +203,89 @@ impl Runtime {
         }
         user_content.push_str(content);
 
-        // 5. Call LLM via ProviderManager
-        let request = LlmRequest::with_system(&choice.model, system_prompt, &user_content)
-            .set_max_tokens(500)
-            .set_temperature(0.3);
-
-        match self.llm_with_timeout(&choice.provider, &request).await {
-            Ok(resp) => {
+        // 4. Call LLM via Provider trait (sync)
+        match provider.chat(system_prompt, &user_content) {
+            Ok(response) => {
                 Metrics::add(&self.metrics.llm_latency_total_ms, llm_start.elapsed().as_millis() as u64);
-                let tokens = resp.usage.as_ref().map(|u| u.total_tokens).unwrap_or(0);
-                Metrics::add(&self.metrics.llm_tokens_total, tokens as u64);
-                info!(
-                    latency_ms = resp.latency_ms,
-                    tokens = tokens,
-                    "LLM response received"
-                );
-                resp.content
+                if let Some(usage) = &response.usage {
+                    Metrics::add(&self.metrics.llm_tokens_total, usage.total_tokens as u64);
+                }
+                info!(provider = provider.id(), "LLM response received");
+                response.content
             }
             Err(e) => {
                 Metrics::inc(&self.metrics.llm_calls_failed);
-                // Graceful fallback
-                warn!(error = %e, "LLM call failed, trying fallback");
-                match self.provider_mgr.chat("noop", &request).await {
-                    Ok(_) => {
-                        let mut fallback = format!(
-                            "[Offline mode] LLM unavailable ({}). Data saved, will process when connected.",
-                            choice.provider,
-                        );
-                        if has_memory {
-                            fallback.push_str(&format!(
-                                "\n{} related entries found in memory.", memory_results.len()
-                            ));
-                        }
-                        fallback
-                    }
-                    Err(_) => "[OneClaw] System temporarily unavailable. Please try again.".into(),
+                warn!(error = %e, "LLM call failed");
+                let mut fallback = format!(
+                    "[Offline mode] LLM unavailable ({}). Data saved, will process when connected.",
+                    provider.id(),
+                );
+                if has_memory {
+                    fallback.push_str(&format!(
+                        "\n{} related entries found in memory.", memory_results.len()
+                    ));
                 }
+                fallback
+            }
+        }
+    }
+
+    /// Generate offline response when no provider is configured.
+    fn offline_response(&self, content: &str) -> String {
+        let memory_results = self.search_memory_context(content);
+        let mut response = "[Offline mode] No LLM provider configured.".to_string();
+        if !memory_results.is_empty() {
+            response.push_str(&format!("\n{} related entries found in memory.", memory_results.len()));
+        }
+        response
+    }
+
+    /// Search memory for context relevant to user message.
+    /// Uses hybrid search (FTS + vector) if embedding available, else FTS only.
+    fn search_memory_context(&self, content: &str) -> Vec<crate::memory::MemoryEntry> {
+        let limit = 5;
+
+        // Try hybrid search first
+        if let Some(ref emb_provider) = self.embedding
+            && let Some(vector_mem) = self.memory.as_vector()
+            && let Ok(query_embedding) = emb_provider.embed(content)
+            && let Ok(results) = vector_mem.hybrid_search(content, &query_embedding, limit)
+        {
+            return results.into_iter().map(|r| r.entry).collect();
+        }
+
+        // Fallback: FTS5
+        self.memory
+            .search(&crate::memory::MemoryQuery::new(content).with_limit(limit))
+            .unwrap_or_default()
+    }
+
+    /// Per-command authorization check.
+    /// Returns Some(denied response) if denied, None if allowed.
+    fn check_auth(&self, kind: crate::security::ActionKind, resource: &str, actor: &str) -> Option<ProcessResult> {
+        use crate::security::Action;
+
+        let action = Action {
+            kind,
+            resource: resource.into(),
+            actor: actor.into(),
+        };
+
+        match self.security.authorize(&action) {
+            Ok(permit) if permit.granted => {
+                Metrics::inc(&self.metrics.messages_secured);
+                None // allowed
+            }
+            Ok(permit) => {
+                Metrics::inc(&self.metrics.messages_denied);
+                Some(ProcessResult::Response(format!(
+                    "Access denied: {:?} on '{}' — {}. Use 'pair' + 'verify CODE' to pair device.",
+                    action.kind, resource, permit.reason,
+                )))
+            }
+            Err(e) => {
+                Metrics::inc(&self.metrics.errors_total);
+                Some(ProcessResult::Response(format!("Security error: {}", e)))
             }
         }
     }
@@ -254,15 +293,9 @@ impl Runtime {
     /// Run a chain with the current runtime context
     pub async fn run_chain(&self, chain: &crate::orchestrator::Chain, input: &str) -> Result<crate::orchestrator::ChainResult> {
         use crate::orchestrator::ChainContext;
-        use crate::orchestrator::router::analyze_complexity;
-
-        let complexity = analyze_complexity(input, true);
-        let choice = self.router.route(complexity)?;
 
         let ctx = ChainContext {
-            provider_mgr: &self.provider_mgr,
-            provider_name: &choice.provider,
-            model: &choice.model,
+            provider: self.provider.as_deref(),
             memory: self.memory.as_ref(),
             event_bus: self.event_bus.as_ref(),
             system_prompt: "You are OneClaw, a helpful AI assistant running on an edge device. Answer concisely.",
@@ -273,7 +306,7 @@ impl Runtime {
     }
 
     /// Health check — probe all 5 layers and report status
-    async fn health_check(&self) -> String {
+    fn health_check(&self) -> String {
         use crate::security::{Action, ActionKind};
 
         let mut lines = vec!["OneClaw Health Check:".to_string()];
@@ -287,13 +320,16 @@ impl Runtime {
         lines.push(format!("  L0 Security:     {}", if sec_ok { "OK" } else { "FAIL" }));
 
         // Layer 1: LLM Orchestrator
-        let providers = self.provider_mgr.list_providers();
-        let availability = self.provider_mgr.check_availability().await;
-        let any_online = providers.iter().any(|p| *availability.get(*p).unwrap_or(&false));
-        lines.push(format!("  L1 Orchestrator: {} ({} providers, {} online)",
-            if any_online { "OK" } else { "DEGRADED" },
-            providers.len(),
-            availability.values().filter(|v| **v).count(),
+        let (provider_status, provider_online) = match &self.provider {
+            Some(p) => {
+                let online = p.is_available();
+                (format!("{} ({})", p.id(), if online { "online" } else { "offline" }), online)
+            }
+            None => ("none (offline mode)".into(), false),
+        };
+        lines.push(format!("  L1 Orchestrator: {} (provider: {})",
+            if provider_online { "OK" } else { "DEGRADED" },
+            provider_status,
         ));
 
         // Layer 2: Memory
@@ -314,7 +350,7 @@ impl Runtime {
         let all_ok = sec_ok && mem_ok;
         lines.push(format!("\n  Uptime: {} | Status: {}",
             self.metrics.uptime_display(),
-            if all_ok && any_online { "HEALTHY" } else if all_ok { "DEGRADED" } else { "UNHEALTHY" },
+            if all_ok && provider_online { "HEALTHY" } else if all_ok { "DEGRADED" } else { "UNHEALTHY" },
         ));
 
         lines.join("\n")
@@ -404,9 +440,6 @@ impl Runtime {
     /// Security model: Only exit/help/pair/verify are always-open.
     /// ALL other commands require security authorization first.
     async fn process_message(&self, message: &crate::channel::IncomingMessage) -> ProcessResult {
-        use crate::security::{Action, ActionKind};
-        use tracing::warn;
-
         Metrics::inc(&self.metrics.messages_total);
 
         let content_lower = message.content.to_lowercase();
@@ -478,68 +511,71 @@ Any other input will be processed by the AI pipeline.".into());
             );
         }
 
-        // === SECURITY CHECK for everything else ===
+        // === RESOLVE ACTOR (device ID from pairing, or raw source) ===
         let actor = self.source_device_map.lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(&message.source)
             .cloned()
             .unwrap_or_else(|| message.source.clone());
 
-        let action = Action {
-            kind: ActionKind::Execute,
-            resource: "command".into(),
-            actor,
-        };
-
-        match self.security.authorize(&action) {
-            Ok(permit) if permit.granted => {
-                Metrics::inc(&self.metrics.messages_secured);
-                self.dispatch_secured_command(message, content_lower).await
-            }
-            Ok(permit) => {
-                Metrics::inc(&self.metrics.messages_denied);
-                ProcessResult::Response(format!(
-                    "Access denied: {}. Use 'pair' + 'verify CODE' to pair device.",
-                    permit.reason
-                ))
-            }
-            Err(e) => {
-                Metrics::inc(&self.metrics.errors_total);
-                warn!("Security error: {}", e);
-                ProcessResult::Response(format!("Security error: {}", e))
-            }
-        }
+        // === PER-COMMAND AUTHORIZATION inside dispatch ===
+        self.dispatch_secured_command(message, content_lower, &actor).await
     }
 
-    /// Dispatch commands that have passed security check
-    async fn dispatch_secured_command(&self, message: &crate::channel::IncomingMessage, content_lower: &str) -> ProcessResult {
+    /// Dispatch commands with per-command authorization.
+    /// Each command checks its own ActionKind + resource before executing.
+    async fn dispatch_secured_command(&self, message: &crate::channel::IncomingMessage, content_lower: &str, actor: &str) -> ProcessResult {
+        use crate::security::ActionKind;
+
+        // --- Read/system commands ---
+
         if content_lower == "metrics" {
+            if let Some(denied) = self.check_auth(ActionKind::Execute, "system:metrics", actor) { return denied; }
             return ProcessResult::Response(self.metrics.report());
         }
 
         if content_lower == "health" {
-            return ProcessResult::Response(self.health_check().await);
+            if let Some(denied) = self.check_auth(ActionKind::Execute, "system:health", actor) { return denied; }
+            return ProcessResult::Response(self.health_check());
         }
 
         if content_lower == "reload" {
+            if let Some(denied) = self.check_auth(ActionKind::Execute, "system:reload", actor) { return denied; }
             return ProcessResult::Response(self.reload_config());
         }
 
         if content_lower == "status" {
+            if let Some(denied) = self.check_auth(ActionKind::Execute, "system:status", actor) { return denied; }
             let o = std::sync::atomic::Ordering::Relaxed;
             let provider_status = match &self.provider {
                 Some(p) => format!("{} ({})", p.id(), if p.is_available() { "online" } else { "offline" }),
                 None => "none (offline mode)".into(),
             };
             let chain_desc = crate::provider::describe_chain(&self.config.provider);
+            let embedding_status = match &self.embedding {
+                Some(emb) => {
+                    let mut s = format!("{} ({}d)", emb.model_id(), emb.dimensions());
+                    if let Some(vector_mem) = self.memory.as_vector()
+                        && let Ok(stats) = vector_mem.vector_stats()
+                    {
+                        s.push_str(&format!(
+                            " — {} embedded / {} total",
+                            stats.embedded_count,
+                            stats.embedded_count + stats.unembedded_count,
+                        ));
+                    }
+                    s
+                }
+                None => "disabled".into(),
+            };
             return ProcessResult::Response(format!(
                 "OneClaw Agent v1.5.0\n\
                  \n  Uptime: {}\n\
                  \n  Security: {}\n\
                    Memory: {} entries ({})\n\
+                   Embedding: {}\n\
                    Provider: {}\n\
                    Chain: {}\n\
-                   Async Providers: {} (default: {})\n\
                    Tools: {}\n\
                    Events: {} processed, {} pending\n\
                    Messages: {} total ({} denied)\n\
@@ -550,10 +586,9 @@ Any other input will be processed by the AI pipeline.".into());
                 if self.config.security.deny_by_default { "enforced" } else { "open" },
                 self.memory.count().unwrap_or(0),
                 self.config.memory.backend,
+                embedding_status,
                 provider_status,
                 chain_desc,
-                self.provider_mgr.list_providers().len(),
-                self.config.providers.default,
                 self.tool_registry.count(),
                 self.metrics.events_processed.load(o),
                 self.event_bus.pending_count(),
@@ -565,17 +600,20 @@ Any other input will be processed by the AI pipeline.".into());
         }
 
         if content_lower == "providers" {
-            let providers = self.provider_mgr.list_providers();
-            let availability = self.provider_mgr.check_availability().await;
-            let mut response = format!("LLM Providers (default: {}):\n", self.provider_mgr.default_provider());
-            for name in &providers {
-                let status = if *availability.get(*name).unwrap_or(&false) { "online" } else { "offline" };
-                response.push_str(&format!("  {} — {}\n", name, status));
-            }
+            if let Some(denied) = self.check_auth(ActionKind::Execute, "system:providers", actor) { return denied; }
+            let response = match &self.provider {
+                Some(p) => {
+                    let status = if p.is_available() { "online" } else { "offline" };
+                    let chain_desc = crate::provider::describe_chain(&self.config.provider);
+                    format!("LLM Provider:\n  {} — {}\n  Chain: {}\n", p.id(), status, chain_desc)
+                }
+                None => "No LLM provider configured (offline mode).\n".into(),
+            };
             return ProcessResult::Response(response);
         }
 
         if content_lower == "events" {
+            if let Some(denied) = self.check_auth(ActionKind::Execute, "system:events", actor) { return denied; }
             let pending = self.event_bus.pending_count();
             let recent = self.event_bus.recent_events(5).unwrap_or_default();
             let mut response = format!("Event Bus: {} pending\n", pending);
@@ -597,6 +635,7 @@ Any other input will be processed by the AI pipeline.".into());
         }
 
         if content_lower == "channels" {
+            if let Some(denied) = self.check_auth(ActionKind::Execute, "system:channels", actor) { return denied; }
             let channels = self.active_channels.lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .clone();
@@ -610,6 +649,7 @@ Any other input will be processed by the AI pipeline.".into());
 
         // devices — list paired devices
         if content_lower == "devices" {
+            if let Some(denied) = self.check_auth(ActionKind::Execute, "security:devices", actor) { return denied; }
             let response = match self.security.list_devices() {
                 Ok(devices) if devices.is_empty() => "No paired devices.".into(),
                 Ok(devices) => {
@@ -633,6 +673,7 @@ Any other input will be processed by the AI pipeline.".into());
 
         // unpair <id_prefix> — remove a paired device
         if content_lower.starts_with("unpair ") {
+            if let Some(denied) = self.check_auth(ActionKind::Execute, "security:unpair", actor) { return denied; }
             let prefix = message.content.trim()[7..].trim();
             let response = match self.security.remove_device(prefix) {
                 Ok(device) => format!(
@@ -647,6 +688,7 @@ Any other input will be processed by the AI pipeline.".into());
 
         // tools — list registered tools
         if content_lower == "tools" {
+            if let Some(denied) = self.check_auth(ActionKind::Execute, "system:tools", actor) { return denied; }
             let tools = self.tool_registry.list_tools();
             let mut response = format!("Registered Tools ({}):\n", tools.len());
             if tools.is_empty() {
@@ -675,6 +717,8 @@ Any other input will be processed by the AI pipeline.".into());
             }
 
             let tool_name = parts[0];
+            let resource = format!("tool:{}", tool_name);
+            if let Some(denied) = self.check_auth(ActionKind::Execute, &resource, actor) { return denied; }
             let mut params = std::collections::HashMap::new();
             for &part in &parts[1..] {
                 if let Some((key, value)) = part.split_once('=') {
@@ -698,7 +742,36 @@ Any other input will be processed by the AI pipeline.".into());
         }
 
         if content_lower.starts_with("remember ") {
+            if let Some(denied) = self.check_auth(ActionKind::Execute, "memory:write", actor) { return denied; }
             let text = message.content.trim()[9..].trim();
+            let meta = crate::memory::MemoryMeta::default();
+
+            // Try embedding + vector store first
+            if let Some(ref emb_provider) = self.embedding
+                && let Some(vector_mem) = self.memory.as_vector()
+            {
+                match emb_provider.embed(text) {
+                    Ok(embedding) => {
+                        match vector_mem.store_with_embedding(text, meta, &embedding) {
+                            Ok(id) => {
+                                Metrics::inc(&self.metrics.memory_stores);
+                                let count = self.memory.count().unwrap_or(0);
+                                return ProcessResult::Response(format!(
+                                    "Remembered (with embedding). (ID: {}, total memories: {})", &id[..8], count
+                                ));
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "Vector store failed, falling back to regular store");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Embedding failed, storing without vector");
+                    }
+                }
+            }
+
+            // Fallback: regular store (no embedding)
             Metrics::inc(&self.metrics.memory_stores);
             let response = match self.memory.store(text, crate::memory::MemoryMeta::default()) {
                 Ok(id) => {
@@ -711,8 +784,39 @@ Any other input will be processed by the AI pipeline.".into());
         }
 
         if content_lower.starts_with("recall ") {
+            if let Some(denied) = self.check_auth(ActionKind::Execute, "memory:read", actor) { return denied; }
             let query_text = message.content.trim()[7..].trim();
             Metrics::inc(&self.metrics.memory_searches);
+
+            // Try hybrid search (FTS + vector) if embedding available
+            if let Some(ref emb_provider) = self.embedding
+                && let Some(vector_mem) = self.memory.as_vector()
+                && let Ok(query_embedding) = emb_provider.embed(query_text)
+            {
+                match vector_mem.hybrid_search(query_text, &query_embedding, 5) {
+                    Ok(results) if results.is_empty() => {
+                        return ProcessResult::Response("No memories found.".into());
+                    }
+                    Ok(results) => {
+                        let mut resp = format!("Found {} memories:\n", results.len());
+                        for (i, r) in results.iter().enumerate() {
+                            resp.push_str(&format!(
+                                "  {}. [score:{:.2}] [{}] {}\n",
+                                i + 1,
+                                r.similarity,
+                                r.entry.created_at.format("%Y-%m-%d %H:%M"),
+                                r.entry.content,
+                            ));
+                        }
+                        return ProcessResult::Response(resp);
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Hybrid search failed, falling back to FTS");
+                    }
+                }
+            }
+
+            // Fallback: FTS5 keyword search
             let query = crate::memory::MemoryQuery::new(query_text).with_limit(5);
             let response = match self.memory.search(&query) {
                 Ok(results) if results.is_empty() => "No memories found.".into(),
@@ -735,12 +839,14 @@ Any other input will be processed by the AI pipeline.".into());
 
         // ask Q — send question to LLM pipeline
         if content_lower.starts_with("ask ") {
+            if let Some(denied) = self.check_auth(ActionKind::Execute, "llm", actor) { return denied; }
             let question = message.content.trim()[4..].trim();
-            return ProcessResult::Response(self.process_with_llm(question).await);
+            return ProcessResult::Response(self.process_with_llm(question));
         }
 
-        // LLM Processing Pipeline
-        ProcessResult::Response(self.process_with_llm(&message.content).await)
+        // LLM Processing Pipeline (free text)
+        if let Some(denied) = self.check_auth(ActionKind::Execute, "llm", actor) { return denied; }
+        ProcessResult::Response(self.process_with_llm(&message.content))
     }
 
     /// Run the main event loop (single channel).
@@ -998,9 +1104,8 @@ mod tests {
 
         let outputs = channel.get_outputs();
         assert!(outputs.len() >= 3);
-        // LLM pipeline (noop) processes the message — no more [echo]
-        assert!(outputs[0].contains("hello world"));
-        assert!(!outputs[0].contains("[echo]"));
+        // No provider configured → offline mode response
+        assert!(outputs[0].contains("Offline mode"), "Expected offline response, got: {}", outputs[0]);
         assert!(outputs[1].contains("OneClaw Agent v1.5.0")); // status contains name + version
         assert!(outputs[2].contains("Goodbye"));     // exit
     }
@@ -1069,8 +1174,8 @@ mod tests {
         let channel = MockChannel::new(vec!["providers", "exit"]);
         runtime.run(&channel).await.unwrap();
         let outputs = channel.get_outputs();
-        assert!(outputs[0].contains("LLM Providers"));
-        assert!(outputs[0].contains("noop"));
+        assert!(outputs[0].contains("No LLM provider") || outputs[0].contains("LLM Provider"),
+            "Expected provider info, got: {}", outputs[0]);
     }
 
     #[tokio::test]
@@ -1084,13 +1189,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_runtime_llm_pipeline_with_noop() {
+    async fn test_runtime_llm_pipeline_with_no_provider() {
         let config = OneClawConfig::default_config();
         let runtime = Runtime::with_defaults(config);
-        let response = runtime.process_with_llm("hello world").await;
+        let response = runtime.process_with_llm("hello world");
         assert!(
-            response.contains("noop") || response.contains("hello"),
-            "Expected noop response, got: {}",
+            response.contains("Offline mode"),
+            "Expected offline response, got: {}",
             response
         );
     }
@@ -1103,7 +1208,7 @@ mod tests {
             "sensor_01 | temperature | value = 22.5",
             crate::memory::MemoryMeta::default(),
         ).unwrap();
-        let response = runtime.process_with_llm("sensor temperature readings").await;
+        let response = runtime.process_with_llm("sensor temperature readings");
         assert!(!response.is_empty());
     }
 
@@ -1371,5 +1476,229 @@ mod tests {
         // Check that active_channels was populated
         let channels = runtime.active_channels.lock().unwrap();
         assert_eq!(channels.len(), 2);
+    }
+
+    // ==================== TIP-042: Vector Memory E2E Tests ====================
+
+    /// Mock embedding provider: deterministic 4-dim embeddings from content hash.
+    struct MockEmbeddingProvider;
+
+    impl crate::provider::EmbeddingProvider for MockEmbeddingProvider {
+        fn id(&self) -> &str { "mock" }
+        fn embed(&self, text: &str) -> crate::error::Result<crate::memory::vector::Embedding> {
+            let hash = text.bytes().fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
+            let values = vec![
+                (hash % 100) as f32 / 100.0,
+                ((hash >> 8) % 100) as f32 / 100.0,
+                ((hash >> 16) % 100) as f32 / 100.0,
+                ((hash >> 24) % 100) as f32 / 100.0,
+            ];
+            Ok(crate::memory::vector::Embedding::new(values, "mock:test"))
+        }
+        fn dimensions(&self) -> usize { 4 }
+        fn is_available(&self) -> bool { true }
+        fn model_name(&self) -> &str { "test" }
+    }
+
+    /// Mock embedding provider that always fails.
+    struct FailingEmbeddingProvider;
+
+    impl crate::provider::EmbeddingProvider for FailingEmbeddingProvider {
+        fn id(&self) -> &str { "failing" }
+        fn embed(&self, _: &str) -> crate::error::Result<crate::memory::vector::Embedding> {
+            Err(crate::error::OneClawError::Provider("mock embed failure".into()))
+        }
+        fn dimensions(&self) -> usize { 4 }
+        fn is_available(&self) -> bool { true }
+        fn model_name(&self) -> &str { "fail" }
+    }
+
+    fn runtime_with_mock_embedding() -> Runtime {
+        let config = OneClawConfig::default_config();
+        let mut runtime = Runtime::with_defaults(config);
+        runtime.memory = Box::new(crate::memory::SqliteMemory::in_memory().unwrap());
+        runtime.embedding = Some(Box::new(MockEmbeddingProvider));
+        runtime
+    }
+
+    fn runtime_without_embedding() -> Runtime {
+        let config = OneClawConfig::default_config();
+        let mut runtime = Runtime::with_defaults(config);
+        runtime.memory = Box::new(crate::memory::SqliteMemory::in_memory().unwrap());
+        runtime
+    }
+
+    #[tokio::test]
+    async fn test_remember_with_embedding() {
+        let runtime = runtime_with_mock_embedding();
+        let channel = MockChannel::new(vec!["remember The temperature is 32 degrees", "exit"]);
+        runtime.run(&channel).await.unwrap();
+        let outputs = channel.get_outputs();
+        assert!(
+            outputs[0].contains("with embedding"),
+            "Should embed on remember: {}", outputs[0]
+        );
+
+        // Verify embedding was stored
+        let vector_mem = runtime.memory.as_vector().unwrap();
+        let stats = vector_mem.vector_stats().unwrap();
+        assert_eq!(stats.embedded_count, 1, "Should have 1 embedded entry");
+    }
+
+    #[tokio::test]
+    async fn test_remember_without_embedding() {
+        let runtime = runtime_without_embedding();
+        let channel = MockChannel::new(vec!["remember something important", "exit"]);
+        runtime.run(&channel).await.unwrap();
+        let outputs = channel.get_outputs();
+        assert!(
+            outputs[0].contains("Remembered"),
+            "Should store without embedding: {}", outputs[0]
+        );
+        assert!(
+            !outputs[0].contains("with embedding"),
+            "Should NOT say 'with embedding': {}", outputs[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_recall_with_vector_search() {
+        let runtime = runtime_with_mock_embedding();
+        let channel = MockChannel::new(vec![
+            "remember The room temperature is 32 degrees",
+            "remember I like programming in Rust",
+            "remember The weather is hot today",
+            "recall temperature",
+            "exit",
+        ]);
+        runtime.run(&channel).await.unwrap();
+        let outputs = channel.get_outputs();
+        // recall output (index 3) should show similarity scores
+        assert!(
+            outputs[3].contains("score:"),
+            "Hybrid recall should show scores: {}", outputs[3]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_recall_fallback_to_fts() {
+        let runtime = runtime_without_embedding();
+        let channel = MockChannel::new(vec![
+            "remember The temperature reading",
+            "recall temperature",
+            "exit",
+        ]);
+        runtime.run(&channel).await.unwrap();
+        let outputs = channel.get_outputs();
+        assert!(
+            outputs[1].contains("temperature"),
+            "FTS recall should find keyword match: {}", outputs[1]
+        );
+        assert!(
+            !outputs[1].contains("score:"),
+            "FTS recall should NOT show scores: {}", outputs[1]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_status_shows_embedding_enabled() {
+        let runtime = runtime_with_mock_embedding();
+        let channel = MockChannel::new(vec!["status", "exit"]);
+        runtime.run(&channel).await.unwrap();
+        let outputs = channel.get_outputs();
+        assert!(
+            outputs[0].contains("Embedding") && outputs[0].contains("mock"),
+            "Status should show embedding info: {}", outputs[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_status_shows_embedding_disabled() {
+        let runtime = runtime_without_embedding();
+        let channel = MockChannel::new(vec!["status", "exit"]);
+        runtime.run(&channel).await.unwrap();
+        let outputs = channel.get_outputs();
+        assert!(
+            outputs[0].contains("disabled"),
+            "Status should show embedding disabled: {}", outputs[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_embedding_failure_graceful_remember() {
+        let config = OneClawConfig::default_config();
+        let mut runtime = Runtime::with_defaults(config);
+        runtime.memory = Box::new(crate::memory::SqliteMemory::in_memory().unwrap());
+        runtime.embedding = Some(Box::new(FailingEmbeddingProvider));
+
+        let channel = MockChannel::new(vec!["remember test data", "exit"]);
+        runtime.run(&channel).await.unwrap();
+        let outputs = channel.get_outputs();
+        // Should fall back to regular store, not error
+        assert!(
+            outputs[0].contains("Remembered"),
+            "Should gracefully fall back: {}", outputs[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_embedding_failure_graceful_recall() {
+        let config = OneClawConfig::default_config();
+        let mut runtime = Runtime::with_defaults(config);
+        runtime.memory = Box::new(crate::memory::SqliteMemory::in_memory().unwrap());
+        runtime.embedding = Some(Box::new(FailingEmbeddingProvider));
+
+        // Store something first (will use fallback since embed fails)
+        let channel = MockChannel::new(vec![
+            "remember test keyword data",
+            "recall keyword",
+            "exit",
+        ]);
+        runtime.run(&channel).await.unwrap();
+        let outputs = channel.get_outputs();
+        // recall should fall back to FTS
+        assert!(
+            outputs[1].contains("keyword") || outputs[1].contains("No memories"),
+            "Should fall back to FTS on embed failure: {}", outputs[1]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_vector_stats_in_status_after_remember() {
+        let runtime = runtime_with_mock_embedding();
+        let channel = MockChannel::new(vec![
+            "remember entry one",
+            "remember entry two",
+            "status",
+            "exit",
+        ]);
+        runtime.run(&channel).await.unwrap();
+        let outputs = channel.get_outputs();
+        // Status (index 2) should show vector stats
+        assert!(
+            outputs[2].contains("2 embedded"),
+            "Status should show 2 embedded entries: {}", outputs[2]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_backward_compat_noop_memory_no_vector() {
+        // NoopMemory.as_vector() returns None → no crash
+        let config = OneClawConfig::default_config();
+        let mut runtime = Runtime::with_defaults(config);
+        // NoopMemory is the default in with_defaults, but set embedding to mock
+        runtime.embedding = Some(Box::new(MockEmbeddingProvider));
+
+        let channel = MockChannel::new(vec![
+            "remember test data",
+            "recall test",
+            "status",
+            "exit",
+        ]);
+        runtime.run(&channel).await.unwrap();
+        let outputs = channel.get_outputs();
+        // remember should fall back to regular store (NoopMemory.as_vector() returns None)
+        assert!(outputs[0].contains("Remembered"), "Should fall back: {}", outputs[0]);
+        assert!(!outputs[0].contains("with embedding"), "NoopMemory can't embed: {}", outputs[0]);
     }
 }

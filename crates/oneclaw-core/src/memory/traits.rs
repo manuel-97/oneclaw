@@ -122,6 +122,12 @@ pub trait Memory: Send + Sync {
 
     /// Count total entries
     fn count(&self) -> Result<usize>;
+
+    /// Upcast to VectorMemory if this implementation supports vector search.
+    /// Default returns None (no vector support).
+    fn as_vector(&self) -> Option<&dyn crate::memory::vector::VectorMemory> {
+        None
+    }
 }
 
 /// NoopMemory — in-memory stub for testing

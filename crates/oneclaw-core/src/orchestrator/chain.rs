@@ -166,12 +166,8 @@ pub struct ChainResult {
 
 /// Context passed to chain execution — provides access to LLM, memory, event bus, tools
 pub struct ChainContext<'a> {
-    /// The provider manager for making LLM calls
-    pub provider_mgr: &'a crate::orchestrator::ProviderManager,
-    /// The name of the LLM provider to use
-    pub provider_name: &'a str,
-    /// The model identifier to use for LLM calls
-    pub model: &'a str,
+    /// The v1.5 provider for making LLM calls (None = offline)
+    pub provider: Option<&'a dyn crate::provider::Provider>,
     /// The memory store for search steps
     pub memory: &'a dyn crate::memory::Memory,
     /// The event bus for emitting events
@@ -232,7 +228,6 @@ impl Default for DefaultChainExecutor {
 #[async_trait]
 impl ChainExecutor for DefaultChainExecutor {
     async fn execute(&self, chain: &Chain, initial_input: &str, ctx: &ChainContext<'_>) -> Result<ChainResult> {
-        use crate::orchestrator::provider::LlmRequest;
         use tracing::{info, warn};
         use std::time::Instant;
 
@@ -248,23 +243,22 @@ impl ChainExecutor for DefaultChainExecutor {
             info!(chain = %chain.name, step = %step.name, index = i, "Executing step");
 
             let output = match &step.action {
-                StepAction::LlmCall { prompt_template, max_tokens, temperature } => {
+                StepAction::LlmCall { prompt_template, .. } => {
                     let prompt = substitute_template(prompt_template, &current_input, &step_outputs);
 
-                    let request = LlmRequest::with_system(
-                        ctx.model,
-                        ctx.system_prompt,
-                        &prompt,
-                    ).set_max_tokens(*max_tokens).set_temperature(*temperature);
-
-                    match ctx.provider_mgr.chat(ctx.provider_name, &request).await {
-                        Ok(resp) => resp.content,
-                        Err(e) => {
-                            warn!(step = %step.name, error = %e, "LLM call failed in chain");
-                            match ctx.provider_mgr.chat("noop", &request).await {
-                                Ok(resp) => format!("[Offline] {}", resp.content),
-                                Err(_) => format!("[Error] Step '{}' failed: {}", step.name, e),
+                    match &ctx.provider {
+                        Some(provider) => {
+                            match provider.chat(ctx.system_prompt, &prompt) {
+                                Ok(resp) => resp.content,
+                                Err(e) => {
+                                    warn!(step = %step.name, error = %e, "LLM call failed in chain");
+                                    format!("[Error] Step '{}' failed: {}", step.name, e)
+                                }
                             }
+                        }
+                        None => {
+                            warn!(step = %step.name, "No provider available for LLM call");
+                            format!("[Offline] No provider configured for step '{}'", step.name)
                         }
                     }
                 }
@@ -546,18 +540,16 @@ mod tests {
 
     // Helper: create test context with noop everything
     fn make_test_context() -> ChainContext<'static> {
-        use crate::orchestrator::ProviderManager;
+        use crate::provider::NoopTestProvider;
         use crate::memory::NoopMemory;
         use crate::event_bus::NoopEventBus;
 
-        let provider_mgr = Box::leak(Box::new(ProviderManager::new("noop")));
+        let provider: &'static dyn crate::provider::Provider = Box::leak(Box::new(NoopTestProvider::available()));
         let memory = Box::leak(Box::new(NoopMemory::new()));
         let event_bus = Box::leak(Box::new(NoopEventBus::new()));
 
         ChainContext {
-            provider_mgr,
-            provider_name: "noop",
-            model: "noop",
+            provider: Some(provider),
             memory,
             event_bus,
             system_prompt: "Test system prompt",

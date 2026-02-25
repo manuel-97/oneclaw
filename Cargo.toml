@@ -2,7 +2,6 @@
 resolver = "2"
 members = [
     "crates/oneclaw-core",
-    "crates/oneclaw-providers",
     "crates/oneclaw-channels",
     "crates/oneclaw-tools",
 ]

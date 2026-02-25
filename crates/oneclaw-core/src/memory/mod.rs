@@ -1,9 +1,11 @@
 //! Layer 2: Memory — Brain
 //! Tri-Search: Keyword (FTS5) + Temporal (B-tree) + Semantic (Vector)
-//! Sprint 3-4: FTS5 + Temporal. Vector search in TIP-007/008.
+//! TIP-040: Vector search interface + SQLite extension.
 
 pub mod traits;
 pub mod sqlite;
+pub mod vector;
 
 pub use traits::*;
 pub use sqlite::SqliteMemory;
+pub use vector::*;

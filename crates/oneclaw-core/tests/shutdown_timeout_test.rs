@@ -70,7 +70,7 @@ async fn test_status_shows_comprehensive_info() {
 
     assert!(out[0].contains("Uptime"), "Status should show uptime: {}", out[0]);
     assert!(out[0].contains("Memory"), "Status should show memory: {}", out[0]);
-    assert!(out[0].contains("Providers"), "Status should show providers: {}", out[0]);
+    assert!(out[0].contains("Provider"), "Status should show provider: {}", out[0]);
     assert!(out[0].contains("Security"), "Status should show security: {}", out[0]);
     assert!(out[0].contains("Tools"), "Status should show tools: {}", out[0]);
     assert!(out[0].contains("Messages"), "Status should show messages: {}", out[0]);

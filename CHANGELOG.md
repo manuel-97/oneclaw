@@ -2,6 +2,59 @@
 
 All notable changes to OneClaw are documented in this file.
 
+## [1.6.0] — 2026-02-25 — SCALPEL
+
+### Breaking Changes
+- Removed legacy `LlmProvider` trait, `ProviderManager`, `LlmRequest`, `LlmResponse`
+  types. Use `Provider` trait instead.
+- Removed `oneclaw-providers` crate. All providers now in `oneclaw-core::provider`.
+- Removed `DegradationMode` enum.
+- `Runtime` no longer has `provider_mgr` field. Use `provider: Option<Box<dyn Provider>>`.
+- `ChainContext` no longer has `provider_mgr` field. Use `provider: Option<&dyn Provider>`.
+
+### Added
+- **Vector Memory Search** — Semantic search using embeddings alongside FTS5 keyword search.
+  - `Embedding` type with serialize/deserialize for SQLite BLOB storage.
+  - `VectorMemory` trait extending `Memory` with `vector_search()` and `hybrid_search()`.
+  - `cosine_similarity()` and `reciprocal_rank_fusion()` utility functions.
+  - `SqliteMemory` implements `VectorMemory` with brute-force cosine similarity.
+  - SQLite schema auto-migration adds embedding columns idempotently.
+- **Embedding Providers** — Generate text embeddings for vector search.
+  - `EmbeddingProvider` trait with `embed()` and `embed_batch()`.
+  - `OllamaEmbedding` — local, offline-capable (nomic-embed-text 768d default).
+  - `OpenAIEmbedding` — cloud-based (text-embedding-3-small 1536d default).
+  - `build_embedding_provider()` factory from TOML config.
+- **Auto-Embed Memory** — `remember` command auto-embeds with graceful fallback.
+- **Semantic Recall** — `recall` command uses hybrid search (FTS + vector + RRF).
+- **Semantic Context** — `process_with_llm()` uses hybrid search for memory context.
+- **Async Event Bus** — `AsyncEventBus` using tokio broadcast channels.
+  - Realtime event delivery (< 10ms latency, no drain() needed).
+  - Multiple concurrent subscribers via `subscribe_channel()`.
+  - Opt-in via `Runtime::with_async_event_bus()`. DefaultEventBus still default.
+- **Per-Command Security** — All commands have individual authorization checks.
+  Resources encoded in authorization (memory:write, memory:read, tool:{name}, etc.).
+- `Memory::as_vector()` — upcast to `VectorMemory` if supported.
+- `status` command shows embedding provider info and vector memory stats.
+
+### Removed
+- `oneclaw-providers` crate (superseded by `oneclaw-core::provider`).
+- `LlmProvider`, `ProviderManager`, `LlmRequest`, `LlmResponse`, `DegradationMode`.
+- All legacy async provider code paths.
+- `llm_with_timeout()` helper.
+
+### Fixed
+- `remember` and `recall` commands no longer bypass security authorization.
+- Generic auth check replaced with per-command authorization for all secured commands.
+
+### Stats
+- Workspace: 3 crates (was 4)
+- Tests: 550+ (was 474)
+- Clippy: 0 warnings
+- Rustdoc: 0 warnings
+- Binary: ~3.5MB
+
+---
+
 ## [1.5.1] — 2026-02-25
 
 ### Pure Kernel — Domain-Agnostic

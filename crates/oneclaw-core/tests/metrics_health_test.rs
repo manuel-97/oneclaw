@@ -170,8 +170,13 @@ async fn test_metrics_llm_counters_on_ask() {
     let ch = TestChannel::new(vec!["ask hello world", "exit"]);
     runtime.run(&ch).await.unwrap();
 
+    // No provider configured → offline mode, no LLM call made
     let llm_calls = runtime.metrics.llm_calls_total.load(Ordering::Relaxed);
-    assert!(llm_calls >= 1, "llm_calls_total should be >= 1, got {}", llm_calls);
+    assert_eq!(llm_calls, 0, "No provider → no LLM calls, got {}", llm_calls);
+
+    // But the ask command should still produce a response
+    let out = ch.outputs();
+    assert!(out[0].contains("Offline mode"), "Should get offline response: {}", out[0]);
 }
 
 #[tokio::test]

@@ -15,7 +15,7 @@ use oneclaw_core::event_bus::{Event, EventBus, DefaultEventBus, EventPriority};
 use oneclaw_core::orchestrator::chain::{
     Chain, ChainStep, ChainExecutor, DefaultChainExecutor, NoopChainExecutor, ChainContext,
 };
-use oneclaw_core::orchestrator::ProviderManager;
+use oneclaw_core::provider::NoopTestProvider;
 use oneclaw_core::memory::NoopMemory;
 use oneclaw_core::event_bus::NoopEventBus;
 use oneclaw_core::tool::{ToolRegistry, NoopTool};
@@ -54,13 +54,11 @@ impl Channel for TestCh {
 }
 
 fn make_test_context() -> ChainContext<'static> {
-    let provider_mgr = Box::leak(Box::new(ProviderManager::new("noop")));
+    let provider: &'static dyn oneclaw_core::provider::Provider = Box::leak(Box::new(NoopTestProvider::available()));
     let memory = Box::leak(Box::new(NoopMemory::new()));
     let event_bus = Box::leak(Box::new(NoopEventBus::new()));
     ChainContext {
-        provider_mgr,
-        provider_name: "noop",
-        model: "noop",
+        provider: Some(provider),
         memory,
         event_bus,
         system_prompt: "Test",
